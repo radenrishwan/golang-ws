@@ -26,7 +26,16 @@ type Room struct {
 	Message chan string
 }
 
-var rooms = map[string]*Room{}
+func NewRoom() Room {
+	return Room{
+		Users:   make(map[string]*User),
+		Enter:   make(chan *User),
+		Leave:   make(chan *User),
+		Message: make(chan string),
+	}
+}
+
+var rooms = NewRoom()
 
 func Pool() {
 	log.Println("Running websocket pooling")
@@ -84,32 +93,20 @@ func upgradeHandler(w http.ResponseWriter, r *http.Request) {
 		Conn: conn,
 	}
 
-	// check if room is available
-	roomName := r.URL.Query().Get("room")
-	if _, ok := rooms[roomName]; !ok {
-		rooms[roomName] = &Room{
-			Name:    roomName,
-			Users:   map[string]*User{},
-			Enter:   make(chan *User),
-			Leave:   make(chan *User),
-			Message: make(chan string),
-		}
-	}
-
-	rooms[roomName].Users[user.Id] = &user
-	rooms[roomName].Enter <- &user
-	log.Println("current user on room : ", len(rooms[roomName].Users))
+	rooms.Users[user.Id] = &user
+	rooms.Enter <- &user
+	log.Println("current user on room : ", len(rooms.Users))
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("error while reading message:", err)
-			rooms[roomName].Leave <- &user
+			rooms.Leave <- &user
 			conn.Close()
 			break
 		}
 
 		log.Printf("getting message from %s: %s\n", user.Id, string(msg))
 
-		rooms[roomName].Message <- string(msg)
+		rooms.Message <- string(msg)
 	}
 }
