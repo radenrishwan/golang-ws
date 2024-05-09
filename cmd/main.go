@@ -13,51 +13,65 @@ var upgrader = websocket.Upgrader{
 }
 
 type User struct {
-	Id   string
-	Name string
-	Conn *websocket.Conn
+	Id       string
+	Name     string
+	RoomName string
+	Conn     *websocket.Conn
+}
+
+type Message struct {
+	Content string
+	Sender  string
+	SendAt  time.Time
+}
+
+func NewMessage(content string, sender string) Message {
+	return Message{
+		Content: content,
+		Sender:  sender,
+		SendAt:  time.Now(),
+	}
 }
 
 type Room struct {
 	Name    string
 	Users   map[string]*User
-	Enter   chan *User
+	Enter   chan User
 	Leave   chan *User
-	Message chan string
+	Message chan Message
 }
 
-func NewRoom() Room {
+func NewRoom(name string) Room {
 	return Room{
+		Name:    name,
 		Users:   make(map[string]*User),
-		Enter:   make(chan *User),
+		Enter:   make(chan User),
 		Leave:   make(chan *User),
-		Message: make(chan string),
+		Message: make(chan Message),
 	}
 }
 
-var rooms = NewRoom()
-
-func Pool() {
+// websocket pooling
+func (r *Room) Run() {
 	log.Println("Running websocket pooling")
 	for {
 		select {
-		case user := <-rooms.Enter:
-			rooms.Users[user.Id] = user
+		case user := <-r.Enter:
+			r.Users[user.Id] = &user
 
-			log.Println("an user joined the room")
-			for _, user := range rooms.Users {
-				user.Conn.WriteMessage(websocket.TextMessage, []byte(user.Id+" joined the room"))
+			for _, usr := range r.Users {
+				usr.Conn.WriteMessage(websocket.TextMessage, []byte(user.Name+" joined the room"))
 			}
-		case user := <-rooms.Leave:
-			delete(rooms.Users, user.Id)
-			for _, user := range rooms.Users {
-				user.Conn.WriteMessage(websocket.TextMessage, []byte(user.Id+" left the room"))
+		case user := <-r.Leave:
+			delete(r.Users, user.Id)
+			for _, usr := range r.Users {
+				usr.Conn.WriteMessage(websocket.TextMessage, []byte(user.Name+" left the room"))
 			}
 
 			user.Conn.Close()
-		case msg := <-rooms.Message:
-			for _, user := range rooms.Users {
-				user.Conn.WriteMessage(websocket.TextMessage, []byte(msg))
+		case msg := <-r.Message:
+			for _, user := range r.Users {
+				user.Conn.WriteMessage(websocket.TextMessage, []byte(msg.Sender+": "+msg.Content))
 			}
 
 			log.Println(msg)
@@ -65,10 +79,51 @@ func Pool() {
 	}
 }
 
+type Hub struct {
+	Rooms      map[string]*Room
+	Register   chan User
+	Unregister chan *User
+}
+
+func (h *Hub) Run() {
+	for {
+		select {
+		case user := <-h.Register:
+			// check if room is not exists
+			if _, ok := h.Rooms[user.RoomName]; !ok {
+				room := NewRoom(user.RoomName)
+
+				h.Rooms[user.RoomName] = &room
+				go h.Rooms[user.RoomName].Run()
+			}
+
+			h.Rooms[user.RoomName].Enter <- user
+			// TODO: check if user is already in the room
+		case user := <-h.Unregister:
+			h.Rooms[user.RoomName].Leave <- user
+
+			// if room is empty, delete it
+			if len(h.Rooms[user.RoomName].Users) == 0 {
+				delete(h.Rooms, user.RoomName)
+			}
+		}
+	}
+}
+
+func NewHub() Hub {
+	return Hub{
+		Rooms:      make(map[string]*Room),
+		Register:   make(chan User),
+		Unregister: make(chan *User),
+	}
+}
+
+var hub = NewHub()
+
 func main() {
 	mux := http.NewServeMux()
 
-	go Pool()
+	go hub.Run()
 
 	mux.HandleFunc("GET /ws", upgradeHandler)
 
@@ -85,28 +140,29 @@ func upgradeHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 	}
 
-	conn.WriteMessage(websocket.TextMessage, []byte("Hello, Client!"))
+	roomName := r.URL.Query().Get("room")
+	name := r.URL.Query().Get("name")
 
 	user := User{
-		Id:   time.Now().String(),
-		Name: time.Now().String(),
-		Conn: conn,
+		Id:       time.Now().String(),
+		Name:     name,
+		RoomName: roomName,
+		Conn:     conn,
 	}
 
-	rooms.Users[user.Id] = &user
-	rooms.Enter <- &user
-	log.Println("current user on room : ", len(rooms.Users))
+	// add user to room and add into room
+	hub.Register <- user
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("error while reading message:", err)
-			rooms.Leave <- &user
+			hub.Unregister <- &user
 			conn.Close()
 			break
 		}
 
-		log.Printf("getting message from %s: %s\n", user.Id, string(msg))
+		log.Printf("getting message from %s: %s", user.Name, string(msg))
 
-		rooms.Message <- string(msg)
+		hub.Rooms[user.RoomName].Message <- NewMessage(string(msg), user.Name)
 	}
 }
