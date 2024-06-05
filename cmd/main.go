@@ -3,6 +3,7 @@ package main
 import (
 	"gows"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -16,23 +17,31 @@ var upgrader = websocket.Upgrader{
 var hub = gows.NewHub()
 
 func main() {
+	slog.SetDefault(gows.Logger)
 	mux := http.NewServeMux()
 
 	go hub.Run()
 
+	mux.HandleFunc("GET /", hc)
 	mux.HandleFunc("GET /ws", upgradeHandler)
 
-	err := http.ListenAndServe(":8080", mux)
+	gows.Logger.Info("Running server...", "PORT", 9999)
+	err := http.ListenAndServe(":9999", mux)
 	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+		log.Fatalln("Error while listening server", "ERROR", err)
 	}
+}
+
+func hc(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
 }
 
 func upgradeHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print("upgrade:", err)
-		w.Write([]byte(err.Error()))
+		gows.Logger.Error("Error while upgrading client connection", "ERROR", err)
+		return
 	}
 
 	roomName := r.URL.Query().Get("room")
@@ -50,14 +59,13 @@ func upgradeHandler(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("error while reading message:", err)
+			gows.Logger.Error("Error while reading message", "ERROR", err)
 			hub.Unregister <- &user
 			conn.Close()
 			break
 		}
 
-		log.Printf("getting message from %s: %s", user.Name, string(msg))
-
+		gows.Logger.Info("Message received", "MESSAGE", string(msg), "USER", user.Name)
 		hub.Rooms[user.RoomName].Message <- gows.NewMessage(string(msg), user.Name)
 	}
 }

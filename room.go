@@ -26,7 +26,7 @@ func NewRoom(name string) Room {
 
 // websocket pooling
 func (r *Room) Run() {
-	log.Println("Running websocket pooling")
+	Logger.Info("Running room pooling", "NAME", r.Name)
 	for {
 		select {
 		case user := <-r.Enter:
